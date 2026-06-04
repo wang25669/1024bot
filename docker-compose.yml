@@ -1,0 +1,20 @@
+services:
+  bot:
+    image: ghcr.io/wang25669/1024bot:latest
+    pull_policy: always               # 每次 up 自动拉取最新镜像
+    container_name: 1024downloader
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ALLOWED_USER_ID=${ALLOWED_USER_ID}
+      - DAILY_LIKE_COUNT=${DAILY_LIKE_COUNT:-10}
+      - DOWNLOAD_BASE=/downloads
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ${DOWNLOAD_PATH:-./download}:/downloads
+      - ./data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

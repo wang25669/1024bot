@@ -1,0 +1,10 @@
+.env
+.env.example
+.gitignore
+.git
+.github
+data/
+download/
+__pycache__/
+*.pyc
+README.md
