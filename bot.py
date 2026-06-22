@@ -27,15 +27,15 @@ HISTORY_FILE     = DATA_DIR / "history.json"
 LOG_HTML         = DATA_DIR / "tasklog.html"
 
 DAILY_LIKE_COUNT = int(os.environ.get("DAILY_LIKE_COUNT", "10"))
-LIKE_MIN, LIKE_MAX          = 3, 10        # 点赞间隔（秒）
+LIKE_MIN, LIKE_MAX          = 63, 198        # 点赞间隔（秒）
 COMMENT_MIN, COMMENT_MAX    = 1051, 1100   # 评论间隔（秒）
 
 COMMENT_POOL = [
     "感谢分享",
     "谢谢楼主",
-    "好帖，顶一个",
-    "支持一下",
-    "收藏了，感谢",
+    "楼主好人",
+    "每天都来看看，要不然要掉队",
+    "这个厉害",
 ]
 
 # 强制 stderr 行缓冲，确保 docker logs 能实时看到所有输出
