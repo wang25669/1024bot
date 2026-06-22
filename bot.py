@@ -27,15 +27,15 @@ HISTORY_FILE     = DATA_DIR / "history.json"
 LOG_HTML         = DATA_DIR / "tasklog.html"
 
 DAILY_LIKE_COUNT = int(os.environ.get("DAILY_LIKE_COUNT", "10"))
-LIKE_MIN, LIKE_MAX          = 63, 198        # 点赞间隔（秒）
+LIKE_MIN, LIKE_MAX          = 187, 299        # 点赞间隔（秒）
 COMMENT_MIN, COMMENT_MAX    = 1051, 1100   # 评论间隔（秒）
 
 COMMENT_POOL = [
     "感谢分享",
     "谢谢楼主",
-    "楼主好人",
-    "每天都来看看，要不然要掉队",
-    "这个厉害",
+    "好帖，顶一个",
+    "支持一下",
+    "收藏了，感谢",
 ]
 
 # 强制 stderr 行缓冲，确保 docker logs 能实时看到所有输出
@@ -389,18 +389,33 @@ async def download_file(session: httpx.AsyncClient, file_url: str, dest_dir: Pat
         return True
 
     try:
-        async with session.stream("GET", file_url, timeout=120) as resp:
-            if resp.status_code != 200:
-                logger.warning(f"下载失败 {resp.status_code}: {file_url}")
+        for attempt in range(3):   # 最多重试 3 次
+            try:
+                async with session.stream("GET", file_url, timeout=120) as resp:
+                    if resp.status_code in (502, 503, 504):
+                        logger.warning(f"下载失败 {resp.status_code}（第{attempt+1}次）: {file_url}")
+                        if attempt < 2:
+                            await asyncio.sleep(100 * (attempt + 1))  # 5s / 10s 递增等待
+                            continue
+                        return False
+                    if resp.status_code != 200:
+                        logger.warning(f"下载失败 {resp.status_code}: {file_url}")
+                        return False
+                    with open(dest, "wb") as f:
+                        async for chunk in resp.aiter_bytes(chunk_size=65536):
+                            f.write(chunk)
+                logger.info(f"下载完成: {filename}" + (f"（第{attempt+1}次）" if attempt > 0 else ""))
+                return True
+            except Exception as e:
+                logger.error(f"下载异常（第{attempt+1}次）{file_url}: {e}")
+                if dest.exists():
+                    dest.unlink()
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))
+                    continue
                 return False
-            with open(dest, "wb") as f:
-                async for chunk in resp.aiter_bytes(chunk_size=65536):
-                    f.write(chunk)
-        logger.info(f"下载完成: {filename}")
-        return True
     except Exception as e:
         logger.error(f"下载异常 {file_url}: {e}")
-        # 清理不完整文件
         if dest.exists():
             dest.unlink()
         return False
