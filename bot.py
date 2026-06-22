@@ -27,7 +27,7 @@ HISTORY_FILE     = DATA_DIR / "history.json"
 LOG_HTML         = DATA_DIR / "tasklog.html"
 
 DAILY_LIKE_COUNT = int(os.environ.get("DAILY_LIKE_COUNT", "10"))
-LIKE_MIN, LIKE_MAX          = 187, 299        # 点赞间隔（秒）
+LIKE_MIN, LIKE_MAX          = 189, 299        # 点赞间隔（秒）
 COMMENT_MIN, COMMENT_MAX    = 1051, 1100   # 评论间隔（秒）
 
 COMMENT_POOL = [
@@ -137,7 +137,7 @@ def queue_retry_failed():
     q = load_queue()
     count = 0
     for item in q:
-        if item["status"] == "failed":
+        if item["status"] in ("failed", "partial"):
             item["status"] = "pending"
             count += 1
     save_queue(q)
@@ -395,7 +395,7 @@ async def download_file(session: httpx.AsyncClient, file_url: str, dest_dir: Pat
                     if resp.status_code in (502, 503, 504):
                         logger.warning(f"下载失败 {resp.status_code}（第{attempt+1}次）: {file_url}")
                         if attempt < 2:
-                            await asyncio.sleep(100 * (attempt + 1))  # 5s / 10s 递增等待
+                            await asyncio.sleep(65 * (attempt + 1))  # 5s / 10s 递增等待
                             continue
                         return False
                     if resp.status_code != 200:
@@ -917,10 +917,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = queue_stats()
     task_on = get_setting("task_enabled", "0") == "1"
     domain  = get_setting("task_domain", "未设置")
+    partial = stats.get('partial', 0)
     await update.message.reply_text(
         f"📊 下载队列：\n"
         f"✅ 已完成：{stats.get('done', 0)}\n"
-        f"⏳ 待下载：{stats.get('pending', 0)}\n"
+        + (f"⚠️ 部分完成：{partial}（重发 URL 可补下失败文件）\n" if partial else "")
+        + f"⏳ 待下载：{stats.get('pending', 0)}\n"
         f"❌ 失败：{stats.get('failed', 0)}\n\n"
         f"🤖 每日任务：{'开启 ✅' if task_on else '关闭 ⏹'}\n"
         f"🌐 域名：{domain}"
@@ -964,16 +966,19 @@ async def _do_download_and_reply(url: str, msg) -> bool:
     ok, info = await download_url(url)
     _, tid, _ = parse_post_url(url)
     if ok:
+        has_fail = info["failed"] > 0
+        # 有失败文件标记为 partial，允许重新发 URL 补下
+        status = "partial" if has_fail else "done"
         parts = [
-            f"✅ 下载完成",
+            f"{'⚠️ 部分下载完成' if has_fail else '✅ 下载完成'}",
             f"📌 {info['title']}",
-            f"📦 共 {info['total']} 个文件（🖼 图片 {info['images']} / 🎬 视频 {info['videos']}）",
+            f"📦 成功 {info['total']} 个（🖼 {info['images']} / 🎬 {info['videos']}）",
         ]
-        if info["failed"] > 0:
-            parts.append(f"⚠️ {info['failed']} 个下载失败")
-        queue_update(url, "done", info["title"])
+        if has_fail:
+            parts.append(f"❌ {info['failed']} 个失败，重新发 URL 可补下剩余文件")
+        queue_update(url, status, info["title"])
         append_log_html("download", tid or "-", url, "ok",
-                        f"{info['title']} 图{info['images']} 视频{info['videos']}")
+                        f"{info['title']} 图{info['images']} 视频{info['videos']} 失败{info['failed']}")
         await msg.edit_text("\n".join(parts))
     else:
         queue_update(url, "failed")
@@ -991,7 +996,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ 未检测到 URL")
         return
     for url in urls:
-        # ── 去重：已成功下载过的同 TID 帖子直接提示 ──
+        # ── 去重：完全下载成功的帖子拒绝重复；部分失败的允许重新补下 ──
         tid = extract_tid(url)
         done = next(
             (i for i in load_queue()
@@ -1002,12 +1007,23 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         if done:
             await update.message.reply_text(
-                f"✅ 此帖已下载过，无需重复\n"
+                f"✅ 此帖已完整下载，无需重复\n"
                 f"📌 {done.get('title') or url}\n"
                 f"🕒 {done.get('updated_at', '未知时间')}"
             )
             continue
-        if not queue_add(url):
+        # partial 状态：提示上次有失败，允许继续下载（已有文件会自动跳过）
+        partial = next(
+            (i for i in load_queue()
+             if i["status"] == "partial" and (
+                 i["url"] == url or (tid and extract_tid(i["url"]) == tid)
+             )),
+            None,
+        )
+        if partial:
+            # 更新为 pending 以便重新下载，不拦截
+            queue_update(partial["url"], "pending")
+        elif not queue_add(url):
             await update.message.reply_text(f"⚠️ 已在队列中（含同帖不同地址）：{url}")
             continue
         msg = await update.message.reply_text(f"⏬ 开始下载：{url}")
