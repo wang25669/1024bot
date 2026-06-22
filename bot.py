@@ -27,7 +27,7 @@ HISTORY_FILE     = DATA_DIR / "history.json"
 LOG_HTML         = DATA_DIR / "tasklog.html"
 
 DAILY_LIKE_COUNT = int(os.environ.get("DAILY_LIKE_COUNT", "10"))
-LIKE_MIN, LIKE_MAX          = 68, 170        # 点赞间隔（秒）
+LIKE_MIN, LIKE_MAX          = 3, 10        # 点赞间隔（秒）
 COMMENT_MIN, COMMENT_MAX    = 1051, 1100   # 评论间隔（秒）
 
 COMMENT_POOL = [
@@ -1077,6 +1077,15 @@ async def cmd_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """统一错误处理：网络抖动降级为 WARNING，其他异常才打完整堆栈"""
+    from telegram.error import NetworkError, TimedOut
+    if isinstance(context.error, (NetworkError, TimedOut)):
+        logger.warning(f"Telegram 网络抖动（PTB 自动重试）: {context.error}")
+    else:
+        logger.error(f"未处理异常: {context.error}", exc_info=context.error)
+
+
 # ── 启动 ──────────────────────────────────────────────────────────────────
 
 def main():
@@ -1093,6 +1102,7 @@ def main():
     ]:
         app.add_handler(CommandHandler(cmd, fn))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url))
+    app.add_error_handler(error_handler)
 
     asyncio.get_event_loop().create_task(schedule_daily(app))
     logger.info("Bot 启动")
