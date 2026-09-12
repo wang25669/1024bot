@@ -1,4 +1,4 @@
-import html
+from html import unescape
 import os
 import re
 import sys
@@ -290,7 +290,7 @@ def extract_media_urls(html: str, base_url: str) -> tuple[list, str]:
     title_tag = soup.find("h4") or soup.find("title")
     if title_tag:
         title = title_tag.get_text(strip=True)
-    title = html.unescape(title)
+    title = unescape(title)
     title = title.replace("\xa0", " ")
     while True:
         m = _BOARD_SUFFIX_RE.search(title)
