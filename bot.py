@@ -1,3 +1,4 @@
+import html
 import os
 import re
 import sys
@@ -255,10 +256,13 @@ def parse_post_url(url: str) -> tuple:
     fid = qs.get("fid", [None])[0]
     return domain, tid, fid or "7"
 
+# 标题末尾板块后缀（仅这 3 个词的 1~2 个组合，基于 download/ 全量 58 个目录实测）
+_BOARD_SUFFIX_RE = re.compile(r'\s*[-–—]?\s*(?:技術討論區|草榴社區|達蓋爾的旗幟)\s*$')
+
 def sanitize_dirname(name: str) -> str:
     name = re.sub(r'[\\/:*?"<>|]', '_', name)
     name = name.strip('. ')
-    return name[:80] if name else "unknown"
+    return name[:60] if name else "unknown"
 
 
 # ── 下载 ──────────────────────────────────────────────────────────────────
@@ -281,11 +285,21 @@ def extract_media_urls(html: str, base_url: str) -> tuple[list, str]:
 
     soup = BeautifulSoup(html, "html.parser")
 
-    # 获取帖子标题
+    # 获取帖子标题（生成这一步就清洗，效率更高：解实体/去板块后缀/合并空格）
     title = "未知标题"
     title_tag = soup.find("h4") or soup.find("title")
     if title_tag:
         title = title_tag.get_text(strip=True)
+    title = html.unescape(title)
+    title = title.replace("\xa0", " ")
+    while True:
+        m = _BOARD_SUFFIX_RE.search(title)
+        if not m:
+            break
+        title = title[:m.start()]
+    title = re.sub(r"\s{2,}", " ", title).strip()
+    if not title:
+        title = "未知标题"
 
     # 定位正文区域 id="conttpc"
     conttpc = soup.find(id="conttpc")
