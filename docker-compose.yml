@@ -9,7 +9,14 @@ services:
       - ALLOWED_USER_ID=${ALLOWED_USER_ID}
       - DAILY_LIKE_COUNT=${DAILY_LIKE_COUNT:-10}
       - DOWNLOAD_BASE=/downloads
+      - OPENLIST_UPLOAD_ENABLED=${OPENLIST_UPLOAD_ENABLED:-false}
+      - OPENLIST_URL=${OPENLIST_URL:-}
+      - OPENLIST_USERNAME=${OPENLIST_USERNAME:-}
+      - OPENLIST_PASSWORD=${OPENLIST_PASSWORD:-}
+      - OPENLIST_TARGET_PATH=${OPENLIST_TARGET_PATH:-/移动6611-加密}
       - PYTHONUNBUFFERED=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${DOWNLOAD_PATH:-./download}:/downloads
       - ./data:/data

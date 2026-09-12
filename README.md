@@ -62,6 +62,17 @@ docker compose pull && docker compose up -d
 | `ALLOWED_USER_ID` | ✅ | 你的 Telegram 用户 ID（@userinfobot 获取），填 0 不限制 |
 | `DOWNLOAD_PATH` | | 下载目录，默认 `./download` |
 | `DAILY_LIKE_COUNT` | | 每日任务帖子数量上限，默认 10 |
+| `OPENLIST_UPLOAD_ENABLED` | | 是否在完整下载后上传到 OpenList，默认 `false` |
+| `OPENLIST_URL` | 开启时 | OpenList 地址；容器访问本机可用 `http://host.docker.internal:5244` |
+| `OPENLIST_USERNAME` | 开启时 | OpenList 用户名 |
+| `OPENLIST_PASSWORD` | 开启时 | OpenList 密码 |
+| `OPENLIST_TARGET_PATH` | | 目标目录，默认 `/移动6611-加密` |
+
+### 上传到 OpenList
+
+在 `.env` 中填好上述 OpenList 配置并把 `OPENLIST_UPLOAD_ENABLED` 改为 `true`。帖子完整下载后，Bot 会把整个帖子文件夹上传到目标目录；部分下载不会触发上传。
+
+上传后会通过 OpenList API 比对文件大小，并在底层存储提供 MD5/SHA1/SHA256 时同时校验哈希。同名文件只有校验一致才跳过；大小或哈希不同会覆盖重传，避免把中断产生的半文件误认为完成。整个文件夹校验成功后才删除本地文件夹；失败时本地文件保留，使用 `/reupload` 重试。此功能只处理启用后的新下载，不扫描已有 `download/`。
 
 ---
 
@@ -88,6 +99,7 @@ docker compose pull && docker compose up -d
 | `/status` | 队列统计 + 当前配置概览 |
 | `/list` | 待下载队列（前 10 条） |
 | `/retry` | 重置失败任务并立即重新下载 |
+| `/reupload` | 重试失败或中断的 OpenList 上传任务 |
 
 ### 每日任务
 

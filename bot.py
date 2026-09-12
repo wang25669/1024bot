@@ -16,6 +16,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes
 )
+from openlist import OpenListUploader, upload_enabled
 
 # ── 配置（从环境变量读取）─────────────────────────────────────────────────
 BOT_TOKEN        = os.environ.get("BOT_TOKEN", "")
@@ -123,6 +124,27 @@ def queue_update(url: str, status: str, title: str = ""):
                 item["title"] = title
             item["updated_at"] = now_str()
     save_queue(q)
+
+
+def queue_update_upload(url: str, status: str, upload_dir: str = "", error: str = ""):
+    q = load_queue()
+    for item in q:
+        if item["url"] == url:
+            item["upload_status"] = status
+            if upload_dir:
+                item["upload_dir"] = upload_dir
+            item["upload_error"] = error
+            item["upload_updated_at"] = now_str()
+    save_queue(q)
+
+
+def queue_upload_stats() -> dict:
+    result = {}
+    for item in load_queue():
+        status = item.get("upload_status")
+        if status:
+            result[status] = result.get(status, 0) + 1
+    return result
 
 def queue_stats() -> dict:
     q = load_queue()
@@ -495,6 +517,7 @@ async def download_url(url: str) -> tuple:
         "videos": vid_ok,
         "failed": fail,
         "total_found": len(media_urls),
+        "download_dir": str(dl_dir),
     }
 
 
@@ -831,7 +854,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 *统计*\n"
         "/status — 概览\n"
         "/list — 待下载队列\n"
-        "/retry — 重试失败任务",
+        "/retry — 重试失败任务\n"
+        "/reupload — 重试 OpenList 上传失败任务",
         parse_mode="Markdown"
     )
 
@@ -929,16 +953,26 @@ async def cmd_checkcookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update.effective_user.id): return
     stats = queue_stats()
+    upload_stats = queue_upload_stats()
     task_on = get_setting("task_enabled", "0") == "1"
     domain  = get_setting("task_domain", "未设置")
     partial = stats.get('partial', 0)
+    upload_text = ""
+    if upload_enabled() or upload_stats:
+        upload_text = (
+            f"\n☁️ OpenList 上传："
+            f"✅{upload_stats.get('done', 0)} "
+            f"⏳{upload_stats.get('pending', 0)} "
+            f"❌{upload_stats.get('failed', 0)}\n"
+        )
     await update.message.reply_text(
         f"📊 下载队列：\n"
         f"✅ 已完成：{stats.get('done', 0)}\n"
         + (f"⚠️ 部分完成：{partial}（重发 URL 可补下失败文件）\n" if partial else "")
         + f"⏳ 待下载：{stats.get('pending', 0)}\n"
-        f"❌ 失败：{stats.get('failed', 0)}\n\n"
-        f"🤖 每日任务：{'开启 ✅' if task_on else '关闭 ⏹'}\n"
+        f"❌ 失败：{stats.get('failed', 0)}\n"
+        + upload_text
+        + f"\n🤖 每日任务：{'开启 ✅' if task_on else '关闭 ⏹'}\n"
         f"🌐 域名：{domain}"
     )
 
@@ -975,6 +1009,81 @@ async def cmd_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _do_download_and_reply(url, msg)
 
 
+async def cmd_reupload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update.effective_user.id): return
+    if not upload_enabled():
+        await update.message.reply_text("⚠️ OpenList 上传功能未开启")
+        return
+    items = [item for item in load_queue()
+             if item.get("upload_status") in ("pending", "failed")]
+    if not items:
+        await update.message.reply_text("✅ 没有待重试的 OpenList 上传任务")
+        return
+    await update.message.reply_text(f"☁️ 开始重试 {len(items)} 个 OpenList 上传任务...")
+    ok_count = fail_count = 0
+    for item in items:
+        local_dir = Path(item.get("upload_dir", ""))
+        if not local_dir.is_dir():
+            error = "本地文件夹不存在"
+            queue_update_upload(item["url"], "failed", error=error)
+            fail_count += 1
+            continue
+        msg = await update.message.reply_text(f"☁️ {item.get('title') or local_dir.name}...")
+        if await _upload_folder_and_update(item["url"], local_dir, msg):
+            ok_count += 1
+        else:
+            fail_count += 1
+    await update.message.reply_text(f"☁️ 重传完成：✅ {ok_count}　❌ {fail_count}")
+
+
+async def _upload_folder_and_update(url: str, local_dir: Path, msg=None) -> bool:
+    download_root = Path(DOWNLOAD_BASE).resolve()
+    local_dir = local_dir.resolve()
+    try:
+        local_dir.relative_to(download_root)
+        if local_dir == download_root:
+            raise ValueError
+    except ValueError:
+        error = "上传目录不在下载根目录内"
+        queue_update_upload(url, "failed", str(local_dir), error)
+        if msg:
+            try:
+                await msg.edit_text(f"❌ OpenList 上传失败：{error}")
+            except Exception:
+                pass
+        return False
+
+    queue_update_upload(url, "pending", str(local_dir))
+    uploader = None
+    try:
+        uploader = OpenListUploader()
+        result = await uploader.upload_folder(local_dir)
+        queue_update_upload(url, "done")
+        text = (f"☁️ OpenList 上传完成：{result['total']} 个文件"
+                f"（上传 {result['uploaded']} / 已存在 {result['skipped']}）\n"
+                f"🧹 本地文件夹已清理")
+        logger.info(text.replace("\n", " | "))
+        if msg:
+            try:
+                await msg.edit_text(text)
+            except Exception as e:
+                logger.warning(f"上传成功但 Telegram 消息更新失败: {e}")
+        return True
+    except Exception as e:
+        error = str(e)[:500]
+        queue_update_upload(url, "failed", str(local_dir), error)
+        logger.error(f"OpenList 上传失败 {local_dir}: {error}")
+        if msg:
+            try:
+                await msg.edit_text(f"❌ OpenList 上传失败：{error}\n本地文件已保留，可用 /reupload 重试")
+            except Exception as notify_error:
+                logger.warning(f"上传失败且 Telegram 消息更新失败: {notify_error}")
+        return False
+    finally:
+        if uploader:
+            await uploader.close()
+
+
 async def _do_download_and_reply(url: str, msg) -> bool:
     """下载一个 URL，编辑 msg 显示结果，写 tasklog，返回是否成功"""
     ok, info = await download_url(url)
@@ -993,6 +1102,12 @@ async def _do_download_and_reply(url: str, msg) -> bool:
         queue_update(url, status, info["title"])
         append_log_html("download", tid or "-", url, "ok",
                         f"{info['title']} 图{info['images']} 视频{info['videos']} 失败{info['failed']}")
+        if not has_fail and upload_enabled():
+            parts.append("☁️ 正在上传到 OpenList...")
+            await msg.edit_text("\n".join(parts))
+            uploaded = await _upload_folder_and_update(url, Path(info["download_dir"]))
+            parts[-1] = ("☁️ OpenList 上传完成，本地文件夹已清理" if uploaded else
+                         "❌ OpenList 上传失败，本地文件已保留，可用 /reupload 重试")
         await msg.edit_text("\n".join(parts))
     else:
         queue_update(url, "failed")
@@ -1143,6 +1258,7 @@ def main():
         ("runnow", cmd_runnow), ("setlogin", cmd_setlogin),
         ("settaskdomain", cmd_settaskdomain), ("checkcookie", cmd_checkcookie),
         ("status", cmd_status), ("list", cmd_list), ("retry", cmd_retry),
+        ("reupload", cmd_reupload),
         ("debug", cmd_debug),
     ]:
         app.add_handler(CommandHandler(cmd, fn))
